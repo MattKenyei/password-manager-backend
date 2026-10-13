@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MattKenyei/password-manager-backend/internal/api/auth"
+	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
 )
@@ -31,20 +33,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-	logger.Info("connected to postgres", "host", cfg.Postgres.Host, "port", cfg.Postgres.Port)
+	logger.Info("connected to postgres")
+
+	userRepo := storage.NewUserRepository(pool)
+	authHandler := auth.NewHandler(userRepo, logger)
 
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
-			logger.Error("postgres ping failed", "error", err)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"degraded","postgres":"down"}`))
+			httputil.WriteError(w, http.StatusServiceUnavailable, "postgres_down", err.Error())
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","postgres":"up"}`))
+		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+
+	mux.HandleFunc("POST /auth/register", authHandler.Register)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Addr,
@@ -63,7 +67,7 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	logger.Info("shutdown signal received, stopping server")
+	logger.Info("shutdown signal received")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

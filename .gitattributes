@@ -1,0 +1,35 @@
+# Default: normalize to LF in the repository, keep LF on checkout
+* text=auto eol=lf
+
+# Windows-specific scripts and configs
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+
+# Go-specific (redundant with * text=auto eol=lf, but explicit)
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Configs
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
