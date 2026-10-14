@@ -13,6 +13,7 @@ import (
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
+	"github.com/MattKenyei/password-manager-backend/internal/token"
 )
 
 func main() {
@@ -36,7 +37,11 @@ func main() {
 	logger.Info("connected to postgres")
 
 	userRepo := storage.NewUserRepository(pool)
-	authHandler := auth.NewHandler(userRepo, logger)
+	deviceRepo := storage.NewDeviceRepository(pool)
+	refreshRepo := storage.NewRefreshTokenRepository(pool)
+	issuer := token.NewIssuer(cfg.JWT.Secret, cfg.JWT.AccessTTL)
+
+	authHandler := auth.NewHandler(userRepo, deviceRepo, refreshRepo, issuer, cfg, logger)
 
 	mux := http.NewServeMux()
 
@@ -49,6 +54,8 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /auth/register", authHandler.Register)
+	mux.HandleFunc("POST /auth/login/start", authHandler.LoginStart)
+	mux.HandleFunc("POST /auth/login/finish", authHandler.LoginFinish)
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Addr,
