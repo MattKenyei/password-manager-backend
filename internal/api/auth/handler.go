@@ -220,3 +220,100 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 		WrappedAccountKey: user.WrappedAccountKey,
 	})
 }
+
+func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
+	var req RefreshRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	rawToken, err := base64.StdEncoding.DecodeString(req.RefreshToken)
+	if err != nil {
+		httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
+		return
+	}
+	if len(rawToken) != 32 {
+		httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
+		return
+	}
+
+	hash := crypto.HashToken(rawToken)
+
+	t, err := h.refresh.FindByHash(r.Context(), hash)
+	if err != nil {
+		if errors.Is(err, storage.ErrRefreshTokenInvalid) {
+			if used, err2 := h.refresh.FindByHashUnsafely(r.Context(), hash); err2 == nil && used.UsedAt != nil {
+				h.logger.Warn("refresh token reuse detected, revoking device",
+					"device_id", used.DeviceID, "user_id", used.UserID)
+				if err := h.refresh.RevokeDeviceTokens(r.Context(), used.DeviceID); err != nil {
+					h.logger.Error("failed to revoke device tokens", "error", err)
+				}
+			}
+			httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
+			return
+		}
+		h.logger.Error("failed to find refresh token", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to process request")
+		return
+	}
+
+	if err := h.refresh.MarkUsed(r.Context(), t.ID); err != nil {
+		h.logger.Error("failed to mark refresh token used", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to process request")
+		return
+	}
+
+	newAccess, err := h.issuer.Issue(t.UserID, t.DeviceID)
+	if err != nil {
+		h.logger.Error("failed to issue access token", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue token")
+		return
+	}
+
+	rawNew, hashNew, err := crypto.GenerateRefreshToken()
+	if err != nil {
+		h.logger.Error("failed to generate refresh token", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue token")
+		return
+	}
+	expiresAt := time.Now().Add(h.cfg.JWT.RefreshTTL)
+	if err := h.refresh.Create(r.Context(), t.UserID, t.DeviceID, hashNew, expiresAt); err != nil {
+		h.logger.Error("failed to store refresh token", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue token")
+		return
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, RefreshResponse{
+		AccessToken:  newAccess,
+		RefreshToken: base64.StdEncoding.EncodeToString(rawNew),
+		ExpiresIn:    int(h.cfg.JWT.AccessTTL.Seconds()),
+	})
+}
+
+func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	var req LogoutRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	rawToken, err := base64.StdEncoding.DecodeString(req.RefreshToken)
+	if err != nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	hash := crypto.HashToken(rawToken)
+
+	t, err := h.refresh.FindByHashUnsafely(r.Context(), hash)
+	if err == nil && t.RevokedAt == nil {
+		if err := h.refresh.RevokeDeviceTokens(r.Context(), t.DeviceID); err != nil {
+			h.logger.Error("failed to revoke tokens on logout", "error", err)
+			httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to logout")
+			return
+		}
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

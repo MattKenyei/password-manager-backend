@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/MattKenyei/password-manager-backend/internal/api/auth"
+	"github.com/MattKenyei/password-manager-backend/internal/api/devices"
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
+	"github.com/MattKenyei/password-manager-backend/internal/api/middleware"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
 	"github.com/MattKenyei/password-manager-backend/internal/token"
@@ -42,6 +44,7 @@ func main() {
 	issuer := token.NewIssuer(cfg.JWT.Secret, cfg.JWT.AccessTTL)
 
 	authHandler := auth.NewHandler(userRepo, deviceRepo, refreshRepo, issuer, cfg, logger)
+	devicesHandler := devices.NewHandler(deviceRepo, refreshRepo, logger)
 
 	mux := http.NewServeMux()
 
@@ -56,6 +59,11 @@ func main() {
 	mux.HandleFunc("POST /auth/register", authHandler.Register)
 	mux.HandleFunc("POST /auth/login/start", authHandler.LoginStart)
 	mux.HandleFunc("POST /auth/login/finish", authHandler.LoginFinish)
+	mux.HandleFunc("POST /auth/refresh", authHandler.Refresh)
+	mux.HandleFunc("POST /auth/logout", authHandler.Logout)
+
+	mux.HandleFunc("GET /devices", middleware.RequireAuth(issuer, devicesHandler.List))
+	mux.HandleFunc("DELETE /devices/{id}", middleware.RequireAuth(issuer, devicesHandler.Revoke))
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Addr,

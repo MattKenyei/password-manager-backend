@@ -27,7 +27,7 @@ type RefreshToken struct {
 	DeviceID  uuid.UUID
 	TokenHash []byte
 	ExpiresAt time.Time
-	usedAt    *time.Time
+	UsedAt    *time.Time
 	RevokedAt *time.Time
 }
 
@@ -54,7 +54,26 @@ func (r *RefreshTokenRepository) FindByHash(ctx context.Context, hash []byte) (*
 	`
 	var t RefreshToken
 	err := r.pool.QueryRow(ctx, query, hash).Scan(
-		&t.ID, &t.UserID, &t.DeviceID, &t.TokenHash, &t.ExpiresAt, &t.usedAt, &t.RevokedAt,
+		&t.ID, &t.UserID, &t.DeviceID, &t.TokenHash, &t.ExpiresAt, &t.UsedAt, &t.RevokedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrRefreshTokenInvalid
+		}
+		return nil, fmt.Errorf("find refresh token: %w", err)
+	}
+	return &t, nil
+}
+
+func (r *RefreshTokenRepository) FindByHashUnsafely(ctx context.Context, hash []byte) (*RefreshToken, error) {
+	const query = `
+		SELECT id, user_id, device_id, token_hash, expires_at, used_at, revoked_at
+		FROM refresh_tokens
+		WHERE token_hash = $1
+	`
+	var t RefreshToken
+	err := r.pool.QueryRow(ctx, query, hash).Scan(
+		&t.ID, &t.UserID, &t.DeviceID, &t.TokenHash, &t.ExpiresAt, &t.UsedAt, &t.RevokedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -70,6 +89,19 @@ func (r *RefreshTokenRepository) MarkUsed(ctx context.Context, id uuid.UUID) err
 	_, err := r.pool.Exec(ctx, query, id)
 	if err != nil {
 		return fmt.Errorf("mark token used: %w", err)
+	}
+	return nil
+}
+
+func (r *RefreshTokenRepository) RevokeDeviceTokens(ctx context.Context, deviceID uuid.UUID) error {
+	const query = `
+		UPDATE refresh_tokens
+		SET revoked_at = NOW()
+		WHERE device_id = $1 AND revoked_at IS NULL
+	`
+	_, err := r.pool.Exec(ctx, query, deviceID)
+	if err != nil {
+		return fmt.Errorf("revoke device tokens: %w", err)
 	}
 	return nil
 }
