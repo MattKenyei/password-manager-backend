@@ -20,7 +20,7 @@ func GenerateRefreshToken() (raw []byte, hash []byte, err error) {
 	return raw, h[:], nil
 }
 
-func hashToken(raw []byte) []byte {
+func HashToken(raw []byte) []byte {
 	h := sha256.Sum256(raw)
 	return h[:]
 }
