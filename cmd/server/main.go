@@ -13,6 +13,7 @@ import (
 	"github.com/MattKenyei/password-manager-backend/internal/api/devices"
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
 	"github.com/MattKenyei/password-manager-backend/internal/api/middleware"
+	synchandler "github.com/MattKenyei/password-manager-backend/internal/api/sync"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
 	"github.com/MattKenyei/password-manager-backend/internal/token"
@@ -41,10 +42,12 @@ func main() {
 	userRepo := storage.NewUserRepository(pool)
 	deviceRepo := storage.NewDeviceRepository(pool)
 	refreshRepo := storage.NewRefreshTokenRepository(pool)
+	itemRepo := storage.NewItemRepository(pool)
 	issuer := token.NewIssuer(cfg.JWT.Secret, cfg.JWT.AccessTTL)
 
 	authHandler := auth.NewHandler(userRepo, deviceRepo, refreshRepo, issuer, cfg, logger)
 	devicesHandler := devices.NewHandler(deviceRepo, refreshRepo, logger)
+	syncHandler := synchandler.NewHandler(itemRepo, logger)
 
 	mux := http.NewServeMux()
 
@@ -64,6 +67,8 @@ func main() {
 
 	mux.HandleFunc("GET /devices", middleware.RequireAuth(issuer, devicesHandler.List))
 	mux.HandleFunc("DELETE /devices/{id}", middleware.RequireAuth(issuer, devicesHandler.Revoke))
+	mux.HandleFunc("POST /sync", middleware.RequireAuth(issuer, syncHandler.Push))
+	mux.HandleFunc("GET /sync", middleware.RequireAuth(issuer, syncHandler.Pull))
 
 	srv := &http.Server{
 		Addr:         cfg.Server.Addr,
