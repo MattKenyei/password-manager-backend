@@ -6,28 +6,36 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/google/uuid"
+
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
 	"github.com/MattKenyei/password-manager-backend/internal/api/middleware"
 	"github.com/MattKenyei/password-manager-backend/internal/domain"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
-	"github.com/google/uuid"
+	"github.com/MattKenyei/password-manager-backend/internal/ws"
 )
 
 const maxChangesPerPush = 500
 
 type Handler struct {
 	items  *storage.ItemRepository
+	hub    *ws.Hub
 	logger *slog.Logger
 }
 
-func NewHandler(items *storage.ItemRepository, logger *slog.Logger) *Handler {
-	return &Handler{items: items, logger: logger}
+func NewHandler(items *storage.ItemRepository, hub *ws.Hub, logger *slog.Logger) *Handler {
+	return &Handler{items: items, hub: hub, logger: logger}
 }
 
 func (h *Handler) Push(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {
 		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "no user in context")
+		return
+	}
+	deviceID, ok := middleware.DeviceIDFromContext(r.Context())
+	if !ok {
+		httputil.WriteError(w, http.StatusUnauthorized, "unauthorized", "no device in context")
 		return
 	}
 
@@ -46,7 +54,6 @@ func (h *Handler) Push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Валидируем и конвертируем.
 	changes := make([]domain.Change, 0, len(req.Changes))
 	fieldErrs := make(map[string]string)
 	seen := make(map[uuid.UUID]struct{})
@@ -94,6 +101,10 @@ func (h *Handler) Push(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("push failed", "error", err, "user_id", userID)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "push failed")
 		return
+	}
+
+	if len(result.Applied) > 0 {
+		h.hub.BroadcastSync(userID, deviceID, result.NewRevision)
 	}
 
 	applied := make([]string, 0, len(result.Applied))
