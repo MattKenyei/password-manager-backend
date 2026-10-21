@@ -103,7 +103,7 @@ func validateRegisterRequest(req *RegisterRequest) map[string]string {
 	if len(req.KDFParams) == 0 {
 		errs["kdf_params"] = "required"
 	}
-	if len(req.WrappedAccountKey) < 73 {
+	if len(req.WrappedAccountKey) < 61 {
 		errs["wrapped_account_key"] = "too short"
 	}
 
