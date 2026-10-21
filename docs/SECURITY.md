@@ -42,7 +42,7 @@
 | Master password → master_key     | Argon2id                  | memory=64 MiB, time=3, parallelism=1 |
 | master_key → wrapped_account_key | AES-256-GCM               | random 12-byte nonce                 |
 | account_key → item_key           | HKDF-SHA256               | info = item_id                       |
-| Item encryption                  | XChaCha20-Poly1305        | random 24-byte nonce                 |
+| Item encryption                  | WebCrypto AES-256-GCM     | random 12-byte nonce                 |
 | Auth verifier                    | SHA-256(auth_key)         | —                                    |
 | Refresh tokens                   | crypto/rand(32) → SHA-256 | —                                    |
 | JWT signing                      | HMAC-SHA256               | 32+ byte secret                      |
