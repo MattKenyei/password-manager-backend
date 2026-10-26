@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -11,13 +12,8 @@ import (
 type Config struct {
 	Server   ServerConfig
 	Postgres PostgresConfig
+	Redis    RedisConfig
 	JWT      JWTConfig
-}
-
-type JWTConfig struct {
-	Secret     []byte
-	AccessTTL  time.Duration
-	RefreshTTL time.Duration
 }
 
 type ServerConfig struct {
@@ -39,14 +35,20 @@ func (p PostgresConfig) DSN() string {
 	)
 }
 
-func Load() (*Config, error) {
-	if err := godotenv.Load(); err != nil {
-	}
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
+}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if len(jwtSecret) < 32 {
-		return nil, fmt.Errorf("JWT_SECRET must be at least 32 chars")
-	}
+type JWTConfig struct {
+	Secret     []byte
+	AccessTTL  time.Duration
+	RefreshTTL time.Duration
+}
+
+func Load() (*Config, error) {
+	_ = godotenv.Load()
 
 	cfg := &Config{
 		Server: ServerConfig{
@@ -59,10 +61,10 @@ func Load() (*Config, error) {
 			Password: getEnv("POSTGRES_PASSWORD", ""),
 			DBName:   getEnv("POSTGRES_DB", ""),
 		},
-		JWT: JWTConfig{
-			Secret:     []byte(jwtSecret),
-			AccessTTL:  15 * time.Minute,
-			RefreshTTL: 30 * 24 * time.Hour,
+		Redis: RedisConfig{
+			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
+			Password: getEnv("REDIS_PASSWORD", ""),
+			DB:       getEnvInt("REDIS_DB", 0),
 		},
 	}
 
@@ -76,12 +78,32 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("POSTGRES_DB is required")
 	}
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if len(jwtSecret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must be at least 32 characters")
+	}
+
+	cfg.JWT = JWTConfig{
+		Secret:     []byte(jwtSecret),
+		AccessTTL:  15 * time.Minute,
+		RefreshTTL: 30 * 24 * time.Hour,
+	}
+
 	return cfg, nil
 }
 
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v
+	}
+	return fallback
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }
