@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
+	"github.com/MattKenyei/password-manager-backend/internal/audit"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
 	"github.com/MattKenyei/password-manager-backend/internal/crypto"
 	"github.com/MattKenyei/password-manager-backend/internal/domain"
@@ -25,18 +27,28 @@ type Handler struct {
 	refresh *storage.RefreshTokenRepository
 	issuer  *token.Issuer
 	cfg     *config.Config
+	audit   *audit.Logger
 	logger  *slog.Logger
 }
 
-func NewHandler(users *storage.UserRepository, devices *storage.DeviceRepository, refresh *storage.RefreshTokenRepository, issuer *token.Issuer, cfg *config.Config, logger *slog.Logger) *Handler {
+func NewHandler(users *storage.UserRepository, devices *storage.DeviceRepository, refresh *storage.RefreshTokenRepository, issuer *token.Issuer, cfg *config.Config, auditLogger *audit.Logger, logger *slog.Logger) *Handler {
 	return &Handler{
 		users:   users,
 		devices: devices,
 		refresh: refresh,
 		issuer:  issuer,
 		cfg:     cfg,
+		audit:   auditLogger,
 		logger:  logger,
 	}
+}
+
+func clientIP(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +86,15 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create user")
 		return
 	}
+
+	h.audit.Log(r.Context(), audit.Event{
+		UserID:    &user.ID,
+		EventType: "register_success",
+		Result:    "success",
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Metadata:  map[string]any{"email": email},
+	})
 
 	httputil.WriteJSON(w, http.StatusCreated, RegisterResponse{
 		ID:        user.ID.String(),
@@ -171,6 +192,13 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 	user, err := h.users.FindByEmail(r.Context(), email)
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
+			h.audit.Log(r.Context(), audit.Event{
+				EventType: "login_failure",
+				Result:    "failure",
+				IP:        clientIP(r),
+				UserAgent: r.UserAgent(),
+				Metadata:  map[string]any{"email": email, "reason": "user_not_found"},
+			})
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 			return
 		}
@@ -181,6 +209,14 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 
 	providedVerifier := crypto.HashAuthKey(req.AuthKey)
 	if subtle.ConstantTimeCompare(providedVerifier, user.AuthVerifier) != 1 {
+		h.audit.Log(r.Context(), audit.Event{
+			UserID:    &user.ID,
+			EventType: "login_failure",
+			Result:    "failure",
+			IP:        clientIP(r),
+			UserAgent: r.UserAgent(),
+			Metadata:  map[string]any{"reason": "bad_password"},
+		})
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
 	}
@@ -210,6 +246,19 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to issue token")
 		return
 	}
+
+	h.audit.Log(r.Context(), audit.Event{
+		UserID:    &user.ID,
+		DeviceID:  &deviceID,
+		EventType: "login_success",
+		Result:    "success",
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Metadata: map[string]any{
+			"device_platform": req.DevicePlatform,
+			"device_name":     req.DeviceName,
+		},
+	})
 
 	h.logger.Info("user logged in", "user_id", user.ID, "device_id", deviceID)
 
@@ -246,6 +295,17 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			if used, err2 := h.refresh.FindByHashUnsafely(r.Context(), hash); err2 == nil && used.UsedAt != nil {
 				h.logger.Warn("refresh token reuse detected, revoking device",
 					"device_id", used.DeviceID, "user_id", used.UserID)
+
+				h.audit.Log(r.Context(), audit.Event{
+					UserID:    &used.UserID,
+					DeviceID:  &used.DeviceID,
+					EventType: "refresh_token_reuse",
+					Result:    "security_alert",
+					IP:        clientIP(r),
+					UserAgent: r.UserAgent(),
+					Metadata:  map[string]any{"action": "device_tokens_revoked"},
+				})
+
 				if err := h.refresh.RevokeDeviceTokens(r.Context(), used.DeviceID); err != nil {
 					h.logger.Error("failed to revoke device tokens", "error", err)
 				}
