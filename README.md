@@ -6,19 +6,22 @@
 A self-hosted alternative to 1Password/Bitwarden. Built as a learning project:
 Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 
+**Repos:** [backend](.) · [frontend](https://github.com/MattKenyei/password-manager-frontend)
+**API reference:** [docs/API.md](docs/API.md)
+
 ## Features
 
 - **Zero-knowledge** — master password and all plaintext stay on the client
-- **End-to-end encryption** — Argon2id key derivation, XChaCha20-Poly1305 / AES-256-GCM
+- **End-to-end encryption** — Argon2id key derivation, AES-256-GCM
 - **Multi-device sync** — offline-first, conflict-aware, revision-based
 - **Real-time notifications** — WebSocket push between devices
-- **JWT auth** — short-lived access tokens + refresh rotation
+- **JWT auth** — short-lived access tokens + refresh rotation with reuse detection
+- **Rate limiting** — Redis sliding window on auth endpoints
+- **Audit log** — async per-user event history
 - **Device management** — list, revoke, per-device revocation
-- **Cross-platform** — Web, Desktop (Tauri), Mobile (Capacitor) from one codebase
+- **Cross-platform** — Web, Desktop (Tauri), Browser extension (Chrome MV3), Mobile (Capacitor, planned) from one codebase
 
 ## Status
-
-🚧 **Backend MVP complete, frontend in progress.**
 
 | Component                               | Status |
 | --------------------------------------- | ------ |
@@ -26,31 +29,31 @@ Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 | Devices (list, revoke)                  | ✅     |
 | Sync (push, pull, conflicts)            | ✅     |
 | WebSocket notifications                 | ✅     |
-| Frontend (Vue 3 + TS)                   | 🚧     |
-| Desktop (Tauri)                         | 📋     |
+| Rate limiting (Redis)                   | ✅     |
+| Audit log                               | ✅     |
+| Frontend (Vue 3 + TS)                   | ✅     |
+| Desktop (Tauri)                         | ✅     |
+| Browser extension (Chrome MV3)          | ✅     |
 | Mobile (Capacitor)                      | 📋     |
 | Autofill (iOS/Android)                  | 📋     |
 
 ## Architecture
 
 ```
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Desktop    │  │    Web       │  │   Mobile     │
-│   (Tauri)    │  │ (Vue 3 + TS) │  │ (Capacitor)  │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                  │
-       │  HTTPS (ciphertext only) + WS     │
-       └─────────────────┼──────────────────┘
-                         │
-                  ┌──────▼───────┐
-                  │  Go Backend  │
-                  └──────┬───────┘
-                         │
-              ┌──────────┴──────────┐
-         ┌────▼────┐          ┌─────▼──────┐
-         │Postgres │          │   Redis    │
-         └─────────┘          └────────────┘
+       Web ─┐
+   Desktop ─┼──HTTPS (ciphertext) + WS──▶ Go Backend ──▶ Postgres
+ Extension ─┘                                  │
+                                          └──▶ Redis (rate limit)
 ```
+
+Server responsibilities:
+
+- Authenticate users (Argon2id-derived verifier, hashed with SHA-256)
+- Store encrypted item blobs
+- Provide revision-ordered sync
+- Notify devices of changes
+- Rate limit auth endpoints
+- Write audit events
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
@@ -59,20 +62,22 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 **Server never has access to:**
 
 - Master password
-- Derived keys (`master_key`, `account_key`)
+- Derived keys (`master_key`, `account_key`, `item_key`)
 - Decrypted items
 
 **Server stores:**
 
-- Password hash for authentication (`Argon2id(auth_key)`)
-- Encrypted blobs (`encrypted_blob` in `items`)
+- Auth verifier: `SHA-256(auth_key)`, where `auth_key = Argon2id(master_password, auth_salt)` on the client
+- Encrypted blobs (`items.encrypted_blob`) — AES-256-GCM ciphertext
+- `wrapped_account_key` — `account_key` encrypted with `master_key` (server can't decrypt)
+- Refresh tokens — hashed with SHA-256
 - Metadata: email, device names, timestamps
 
 **Client-side crypto:**
 
 - `master_key = Argon2id(master_password, enc_salt)`
 - `account_key` — random 32 bytes, wrapped with `master_key`
-- Each item encrypted with `HKDF(account_key, item_id)`
+- Each item encrypted with `HKDF(account_key, item_id)` + AES-256-GCM
 
 See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 
@@ -86,18 +91,21 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 - **goose** — SQL migrations
 - **golang-jwt/jwt/v5** — JWT
 - **coder/websocket** — WebSocket
+- **Redis** — rate limiting
 - **slog** — structured logging
 
-**Frontend:** _(in progress)_
+**Frontend** (see [frontend repo](https://github.com/MattKenyei/password-manager-frontend)):
 
 - **Vue 3** (Composition API) + **TypeScript**
 - **Pinia** — state
 - **Vue Router**
 - **Axios**
-- **Tailwind CSS** + **SCSS**
-- **libsodium-wrappers** — XChaCha20-Poly1305
-- **argon2-browser** — Argon2id in Web Worker
-- **Dexie** — IndexedDB wrapper (web) / **@capacitor-community/sqlite** (mobile)
+- **Tailwind CSS** v4 + **SCSS**
+- **WebCrypto** — AES-256-GCM, HKDF
+- **hash-wasm** — Argon2id in Web Worker
+- **Dexie** — IndexedDB wrapper
+- **Tauri v2** — desktop
+- **CRXJS** — browser extension
 
 **Infrastructure:**
 
@@ -111,16 +119,20 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 ├── cmd/
 │   └── server/           # HTTP server entry point
 ├── internal/
-│   ├── api/              # HTTP handlers, middleware, DTOs
-│   │   ├── auth/
-│   │   ├── devices/
-│   │   ├── sync/
-│   │   └── httputil/
+│   ├── api/
+│   │   ├── auth/         # /auth/*
+│   │   ├── devices/      # /devices/*
+│   │   ├── sync/         # /sync
+│   │   ├── audit/        # /audit
+│   │   ├── middleware/   # RequireAuth, RateLimit
+│   │   └── httputil/     # JSON responses, error format
+│   ├── audit/            # Async audit logger
 │   ├── config/           # env-based config
-│   ├── crypto/           # hashing, key derivation
+│   ├── crypto/           # SHA-256 hashing (server-side verifier only)
 │   ├── ctxkey/           # typed context keys
 │   ├── domain/           # business entities
-│   ├── storage/          # Postgres repositories
+│   ├── ratelimit/        # Redis sliding window
+│   ├── storage/          # Postgres + Redis repositories
 │   ├── token/            # JWT issuance/parsing
 │   └── ws/               # WebSocket hub and clients
 ├── migrations/           # SQL migrations (goose)
@@ -170,6 +182,8 @@ go run ./cmd/server
 air
 ```
 
+**Note:** Postgres is exposed on port **5434** (not the default 5432) to coexist with a local Postgres installation. If you don't have one locally, change it in `docker-compose.yml` to `5432:5432`.
+
 ### Verify
 
 ```bash
@@ -186,7 +200,7 @@ bash scripts/register.sh
 
 ## API
 
-Full reference: [docs/API.md](docs/API.md).
+Full reference: **[docs/API.md](docs/API.md)**.
 
 ### Public endpoints
 
@@ -209,7 +223,17 @@ GET    /devices                 # list user's devices
 DELETE /devices/{id}            # revoke device
 POST   /sync                    # push local changes
 GET    /sync?since=N            # pull changes since revision N
+GET    /audit                   # recent audit events
 ```
+
+### Rate limits
+
+Per-IP, sliding window via Redis:
+
+- `/auth/login/*` — 10/min
+- `/auth/register` — 30/min
+
+Returns `429` with `Retry-After: 60`.
 
 ## Development workflow
 
@@ -233,19 +257,19 @@ docs: describe refresh rotation in ARCHITECTURE
 ## Roadmap
 
 - [x] Backend MVP (auth, devices, sync, WS)
-- [ ] Frontend (Vue 3 + TS)
-  - [ ] Crypto layer (Argon2 worker, WebCrypto wrappers)
-  - [ ] Platform abstractions (SecureStorage, LocalDB)
-  - [ ] Unlock flow (register, login, biometric)
-  - [ ] Vault UI (list, item, editor)
-  - [ ] Sync cycle (Dexie + push/pull + WS)
-- [ ] Desktop app (Tauri)
+- [x] Rate limiting (Redis sliding window)
+- [x] Audit log
+- [x] Frontend (Vue 3 + TS)
+- [x] Desktop app (Tauri)
+- [x] Browser extension (Chrome MV3, standalone)
+- [x] TOTP (2FA codes in vault items)
+- [x] Import/export (encrypted backup + plaintext JSON/CSV)
 - [ ] Mobile app (Capacitor)
 - [ ] Autofill (iOS Credential Provider, Android AutofillService)
-- [ ] Browser extension
-- [ ] 2FA (TOTP, WebAuthn)
+- [ ] OPAQUE login (removes hashed verifier from server)
+- [ ] `account_key` rotation on device compromise
+- [ ] WebAuthn
 - [ ] Sharing (envelope encryption)
-- [ ] Import from 1Password / Bitwarden / KeePass
 
 ## License
 
