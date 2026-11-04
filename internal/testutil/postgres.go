@@ -1,7 +1,9 @@
 package testutil
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -91,4 +94,31 @@ func TruncateAll(t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(context.Background(), `TRUNCATE TABLE users CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
+}
+
+func SeedUserWithPassword(t *testing.T, pool *pgxpool.Pool, email string, authKey []byte) uuid.UUID {
+	t.Helper()
+
+	if len(authKey) != 32 {
+		t.Fatalf("authKey must be 32 bytes, got %d", len(authKey))
+	}
+
+	sum := sha256.Sum256(authKey)
+	id := uuid.New()
+
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO users (id, email, auth_verifier, auth_salt, enc_salt, kdf_params, wrapped_account_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`, id, email,
+		sum[:],
+		[]byte{0x02, 0x03, 0x04, 0x05},
+		[]byte{0x06, 0x07, 0x08, 0x09},
+		[]byte(`{"algo":"argon2id"}`),
+		bytes.Repeat([]byte{0xFF}, 80),
+	)
+	if err != nil {
+		t.Fatalf("seed user with password: %v", err)
+	}
+
+	return id
 }

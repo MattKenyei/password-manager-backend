@@ -10,6 +10,7 @@ import (
 
 type Limiter struct {
 	rdb    *redis.Client
+	prefix string
 	limit  int64
 	window time.Duration
 }
@@ -31,13 +32,16 @@ end
 return 0
 `)
 
-func New(rdb *redis.Client, limit int64, window time.Duration) *Limiter {
-	return &Limiter{rdb: rdb, limit: limit, window: window}
+func New(rdb *redis.Client, prefix string, limit int64, window time.Duration) *Limiter {
+	return &Limiter{rdb: rdb, prefix: prefix, limit: limit, window: window}
 }
 
 func (l *Limiter) Allow(ctx context.Context, key string) (bool, error) {
 	now := time.Now().UnixMilli()
-	result, err := slidingWindowScript.Run(ctx, l.rdb, []string{"ratelimit:sw:" + key}, now, l.window.Milliseconds(), l.limit).Int64()
+	result, err := slidingWindowScript.Run(ctx, l.rdb,
+		[]string{"ratelimit:sw:" + l.prefix + ":" + key},
+		now, l.window.Milliseconds(), l.limit,
+	).Int64()
 	if err != nil {
 		return true, fmt.Errorf("ratelimit eval: %w", err)
 	}

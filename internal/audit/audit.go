@@ -39,6 +39,9 @@ func NewLogger(pool *pgxpool.Pool, bufferSize int, logger *slog.Logger) *Logger 
 }
 
 func (l *Logger) Log(_ context.Context, e Event) {
+	if l == nil {
+		return
+	}
 	select {
 	case l.ch <- e:
 	default:
