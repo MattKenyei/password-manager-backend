@@ -49,7 +49,7 @@ func (h *Hub) unregister(c *Client) {
 func (h *Hub) BroadcastSync(userID, exceptDeviceID uuid.UUID, revision int64) {
 	data, err := json.Marshal(SyncMessage{Type: "sync", Revision: revision})
 	if err != nil {
-		h.logger.Error("marshal ws message: %w", err)
+		h.logger.Error("marshal ws message", "error", err)
 		return
 	}
 
