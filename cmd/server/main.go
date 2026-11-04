@@ -64,9 +64,8 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	// Лимиты: 10 попыток логина в минуту, 30 регистраций в минуту с одного IP.
-	loginLimiter := ratelimit.New(redisClient, 10, time.Minute)
-	registerLimiter := ratelimit.New(redisClient, 30, time.Minute)
+	loginLimiter := ratelimit.New(redisClient, "auth-login", 10, time.Minute)
+	registerLimiter := ratelimit.New(redisClient, "auth-register", 30, time.Minute)
 
 	mux := http.NewServeMux()
 
