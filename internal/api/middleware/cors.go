@@ -34,9 +34,15 @@ func isAllowedOrigin(origin string) bool {
 		return true
 	}
 
-	// Production web frontend
+	// Cloudflare Pages
 	const pagesSuffix = ".pages.dev"
 	if len(origin) > len(pagesSuffix) && origin[len(origin)-len(pagesSuffix):] == pagesSuffix {
+		return true
+	}
+
+	// Cloudflare Workers
+	const workersSuffix = ".workers.dev"
+	if len(origin) > len(workersSuffix) && origin[len(origin)-len(workersSuffix):] == workersSuffix {
 		return true
 	}
 
