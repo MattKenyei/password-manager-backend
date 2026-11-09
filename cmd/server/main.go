@@ -90,9 +90,11 @@ func main() {
 	mux.HandleFunc("GET /sync", middleware.RequireAuth(issuer, syncHandler.Pull))
 	mux.HandleFunc("GET /audit", middleware.RequireAuth(issuer, auditHandler.List))
 
+	handler := middleware.CORS(mux)
+
 	srv := &http.Server{
 		Addr:         cfg.Server.Addr,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
