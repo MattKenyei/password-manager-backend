@@ -27,10 +27,16 @@ func CORS(next http.Handler) http.Handler {
 
 func isAllowedOrigin(origin string) bool {
 	switch origin {
-	case "http://localhost:5173", // web dev
-		"http://localhost:5174", // extension dev
-		"https://localhost",     // Capacitor Android (androidScheme: 'https')
-		"capacitor://localhost": // Capacitor iOS
+	case "http://localhost:5173",
+		"http://localhost:5174",
+		"https://localhost",
+		"capacitor://localhost":
+		return true
+	}
+
+	// Production web frontend
+	const pagesSuffix = ".pages.dev"
+	if len(origin) > len(pagesSuffix) && origin[len(origin)-len(pagesSuffix):] == pagesSuffix {
 		return true
 	}
 
