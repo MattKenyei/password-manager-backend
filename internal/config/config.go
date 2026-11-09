@@ -29,9 +29,13 @@ type PostgresConfig struct {
 }
 
 func (p PostgresConfig) DSN() string {
+	sslmode := os.Getenv("POSTGRES_SSLMODE")
+	if sslmode == "" {
+		sslmode = "disable"
+	}
 	return fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
-		p.User, p.Password, p.Host, p.Port, p.DBName,
+		"postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		p.User, p.Password, p.Host, p.Port, p.DBName, sslmode,
 	)
 }
 
@@ -50,9 +54,18 @@ type JWTConfig struct {
 func Load() (*Config, error) {
 	_ = godotenv.Load()
 
+	addr := os.Getenv("SERVER_ADDR")
+	if addr == "" {
+		if port := os.Getenv("PORT"); port != "" {
+			addr = ":" + port
+		} else {
+			addr = ":8080"
+		}
+	}
+
 	cfg := &Config{
 		Server: ServerConfig{
-			Addr: getEnv("SERVER_ADDR", ":8080"),
+			Addr: addr,
 		},
 		Postgres: PostgresConfig{
 			Host:     getEnv("POSTGRES_HOST", "localhost"),
