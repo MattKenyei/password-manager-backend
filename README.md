@@ -34,7 +34,7 @@ Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 | Frontend (Vue 3 + TS)                   | ✅     |
 | Desktop (Tauri)                         | ✅     |
 | Browser extension (Chrome MV3)          | ✅     |
-| Mobile (Capacitor)                      | 📋     |
+| Mobile (Capacitor)                      | ✅     |
 | Autofill (iOS/Android)                  | 📋     |
 
 ## Architecture
@@ -264,7 +264,7 @@ docs: describe refresh rotation in ARCHITECTURE
 - [x] Browser extension (Chrome MV3, standalone)
 - [x] TOTP (2FA codes in vault items)
 - [x] Import/export (encrypted backup + plaintext JSON/CSV)
-- [ ] Mobile app (Capacitor)
+- [x] Mobile app (Capacitor)
 - [ ] Autofill (iOS Credential Provider, Android AutofillService)
 - [ ] OPAQUE login (removes hashed verifier from server)
 - [ ] `account_key` rotation on device compromise
