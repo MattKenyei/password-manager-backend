@@ -8,6 +8,7 @@ Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 
 **Repos:** [backend](.) · [frontend](https://github.com/MattKenyei/password-manager-frontend)
 **API reference:** [docs/API.md](docs/API.md)
+**Live demo:** https://password-manager-6y7.pages.dev (register a test account — data is E2E encrypted, server can't read it)
 
 ## Features
 
@@ -19,7 +20,8 @@ Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 - **Rate limiting** — Redis sliding window on auth endpoints
 - **Audit log** — async per-user event history
 - **Device management** — list, revoke, per-device revocation
-- **Cross-platform** — Web, Desktop (Tauri), Browser extension (Chrome MV3), Mobile (Capacitor, planned) from one codebase
+- **CORS** — same API serves web, extension, desktop and mobile clients
+- **Cross-platform** — Web, Desktop (Tauri), Browser extension (Chrome MV3), Mobile (Capacitor Android) from one codebase
 
 ## Status
 
@@ -31,18 +33,21 @@ Go backend, Vue 3 + TypeScript frontend, real cryptographic guarantees.
 | WebSocket notifications                 | ✅     |
 | Rate limiting (Redis)                   | ✅     |
 | Audit log                               | ✅     |
+| CORS                                    | ✅     |
 | Frontend (Vue 3 + TS)                   | ✅     |
 | Desktop (Tauri)                         | ✅     |
 | Browser extension (Chrome MV3)          | ✅     |
-| Mobile (Capacitor)                      | 📋     |
+| Mobile (Capacitor Android)              | ✅     |
+| iOS                                     | 📋     |
 | Autofill (iOS/Android)                  | 📋     |
 
 ## Architecture
 
 ```
        Web ─┐
-   Desktop ─┼──HTTPS (ciphertext) + WS──▶ Go Backend ──▶ Postgres
- Extension ─┘                                  │
+   Desktop ─┤
+ Extension ─┼──HTTPS (ciphertext) + WS──▶ Go Backend ──▶ Postgres
+    Mobile ─┘                                  │
                                           └──▶ Redis (rate limit)
 ```
 
@@ -106,11 +111,19 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 - **Dexie** — IndexedDB wrapper
 - **Tauri v2** — desktop
 - **CRXJS** — browser extension
+- **Capacitor** — Android app
 
-**Infrastructure:**
+**Infrastructure (dev):**
 
 - **PostgreSQL 17** (Docker)
 - **Redis 7** (Docker)
+
+**Infrastructure (prod):**
+
+- **Render** — Go backend (Docker, free tier)
+- **Neon** — PostgreSQL (free tier, scale-to-zero)
+- **Upstash** — Redis (free tier, TLS)
+- **Cloudflare Pages** — web frontend
 
 ## Project structure
 
@@ -124,7 +137,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 │   │   ├── devices/      # /devices/*
 │   │   ├── sync/         # /sync
 │   │   ├── audit/        # /audit
-│   │   ├── middleware/   # RequireAuth, RateLimit
+│   │   ├── middleware/   # RequireAuth, RateLimit, CORS
 │   │   └── httputil/     # JSON responses, error format
 │   ├── audit/            # Async audit logger
 │   ├── config/           # env-based config
@@ -139,10 +152,11 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 ├── scripts/              # dev helpers (curl scripts)
 ├── docs/                 # architecture, API, security docs
 ├── docker-compose.yml
+├── Dockerfile            # production image
 └── .env.example
 ```
 
-## Getting started
+## Getting started (dev)
 
 ### Prerequisites
 
@@ -155,30 +169,21 @@ See [docs/SECURITY.md](docs/SECURITY.md) for threat model.
 ### Setup
 
 ```bash
-# 1. Clone
 git clone git@github.com:MattKenyei/password-manager-backend.git
 cd password-manager-backend
 
-# 2. Configure environment
 cp .env.example .env
 # Edit .env — set JWT_SECRET to a random 48-byte base64 string:
 #   head -c 48 /dev/urandom | base64 -w 0
 
-# 3. Start Postgres and Redis
 docker compose up -d
-docker compose ps  # both should be "healthy"
+docker compose ps
 
-# 4. Apply migrations
 export GOOSE_DRIVER=postgres
 export GOOSE_DBSTRING="postgres://pm_user:pm_password@localhost:5434/password_manager?sslmode=disable"
 goose -dir ./migrations up
 
-# 5. Install Go dependencies
 go mod download
-
-# 6. Run
-go run ./cmd/server
-# or, with hot reload:
 air
 ```
 
@@ -197,6 +202,57 @@ curl http://localhost:8080/health
 bash scripts/register.sh
 # → {"id":"...","email":"...","created_at":"..."}
 ```
+
+## Deploy (prod)
+
+Backend runs on **Render** (Docker, free tier), with **Neon** (Postgres) and **Upstash** (Redis).
+
+### 1. Postgres (Neon)
+
+1. Create project at [neon.tech](https://neon.tech)
+2. Copy connection string: `postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require`
+3. Apply migrations once, from your machine:
+
+```bash
+export GOOSE_DRIVER=postgres
+export GOOSE_DBSTRING="postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require"
+goose -dir ./migrations up
+```
+
+### 2. Redis (Upstash)
+
+1. Create a Regional database at [upstash.com](https://upstash.com)
+2. Copy **UPSTASH_REDIS_TLS_URL** (`rediss://...`)
+
+### 3. Web Service (Render)
+
+1. New → **Web Service**, connect this repo, branch `dev`
+2. Runtime: **Docker**
+3. Instance type: **Free**
+4. Environment variables:
+
+```
+JWT_SECRET=<48 bytes, base64>
+POSTGRES_HOST=ep-xxx.neon.tech
+POSTGRES_PORT=5432
+POSTGRES_USER=user
+POSTGRES_PASSWORD=pass
+POSTGRES_DB=neondb
+POSTGRES_SSLMODE=require
+REDIS_URL=rediss://default:xxx@eu1-xxx.upstash.io:6379
+SERVER_ADDR=:10000
+```
+
+Render sets `$PORT=10000`; `SERVER_ADDR` overrides it explicitly. Free tier sleeps after 15 min idle — use [cron-job.org](https://cron-job.org) to ping `/health` every 10 min.
+
+### 4. Verify
+
+```bash
+curl https://<your-service>.onrender.com/health
+# {"status":"ok"}
+```
+
+Then run `goose up` against Neon (one-time, as shown above). The `users.auth_verifier` column must exist — otherwise registrations return `500`.
 
 ## API
 
@@ -226,6 +282,18 @@ GET    /sync?since=N            # pull changes since revision N
 GET    /audit                   # recent audit events
 ```
 
+### CORS
+
+Allowed origins (see `internal/api/middleware/cors.go`):
+
+- `http://localhost:5173` — web dev
+- `http://localhost:5174` — extension dev
+- `https://localhost` — Capacitor Android
+- `capacitor://localhost` — Capacitor iOS
+- `chrome-extension://*` — browser extension
+- `*.pages.dev` — Cloudflare Pages
+- `*.trycloudflare.com` — cloudflared dev tunnel
+
 ### Rate limits
 
 Per-IP, sliding window via Redis:
@@ -240,8 +308,8 @@ Returns `429` with `Retry-After: 60`.
 **Branching model:**
 
 - `main` — stable releases only
-- `develop` — integration branch
-- `feature/<name>` — one branch per task, merged into `develop` via PR
+- `dev` — integration branch
+- `feature/<name>` — one branch per task, merged into `dev` via PR
 
 **Commits:** [Conventional Commits](https://www.conventionalcommits.org/)
 
@@ -252,23 +320,27 @@ chore: bump pgx to v5.7.1
 docs: describe refresh rotation in ARCHITECTURE
 ```
 
-**Pull requests:** always into `develop`, squash-merge, delete branch after.
+**Pull requests:** always into `dev`, squash-merge, delete branch after.
 
 ## Roadmap
 
 - [x] Backend MVP (auth, devices, sync, WS)
 - [x] Rate limiting (Redis sliding window)
 - [x] Audit log
+- [x] CORS middleware
+- [x] Production deploy (Render + Neon + Upstash)
 - [x] Frontend (Vue 3 + TS)
 - [x] Desktop app (Tauri)
 - [x] Browser extension (Chrome MV3, standalone)
+- [x] Mobile app (Capacitor Android, biometric unlock)
 - [x] TOTP (2FA codes in vault items)
 - [x] Import/export (encrypted backup + plaintext JSON/CSV)
-- [ ] Mobile app (Capacitor)
+- [ ] iOS build
 - [ ] Autofill (iOS Credential Provider, Android AutofillService)
 - [ ] OPAQUE login (removes hashed verifier from server)
 - [ ] `account_key` rotation on device compromise
-- [ ] WebAuthn
+- [ ] WebAuthn / passkeys
+- [ ] OAuth login (Google, Telegram)
 - [ ] Sharing (envelope encryption)
 
 ## License
