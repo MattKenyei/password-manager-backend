@@ -91,8 +91,11 @@ func TestRecoverFinish_Success(t *testing.T) {
 	newRecoveryBlob := bytes.Repeat([]byte{0x22}, 80)
 
 	resp, body := postJSON(t, ts.url+"/auth/recover/finish", map[string]any{
-		"email":        email,
-		"new_auth_key": b64(newAuthKey),
+		"email":          email,
+		"new_auth_key":   b64(newAuthKey),
+		"new_auth_salt":  b64(randBytes(16)),
+		"new_enc_salt":   b64(randBytes(16)),
+		"new_kdf_params": b64([]byte(`{"algo":"argon2id"}`)),
 		"new_wrapped_keys": []map[string]any{
 			{"kind": "master", "wrapped_blob": b64(newMasterBlob)},
 			{"kind": "recovery", "wrapped_blob": b64(newRecoveryBlob)},
@@ -129,15 +132,29 @@ func TestRecoverFinish_RevokesAllSessions(t *testing.T) {
 	ts := setupServer(t)
 
 	email := "revoke-sessions@example.com"
-	_ = testutil.SeedUserWithRecovery(t, testPool, email, randBytes(32))
+	authKey := randBytes(32)
+	_ = testutil.SeedUserWithRecovery(t, testPool, email, authKey)
 
-	_, refresh1 := seedLoginAndGetTokens(t, ts, email)
-	_, refresh2 := seedLoginAndGetTokens(t, ts, email)
+	var refreshTokens []string
+	for i := 0; i < 2; i++ {
+		deviceID := uuid.New()
+		resp, body := postJSON(t, ts.url+"/auth/login/finish",
+			loginFinishPayload(email, authKey, deviceID))
+		if resp.StatusCode != 200 {
+			t.Fatalf("login %d: %d %s", i+1, resp.StatusCode, body)
+		}
+		var out map[string]any
+		_ = json.Unmarshal(body, &out)
+		refreshTokens = append(refreshTokens, out["refresh_token"].(string))
+	}
 
 	newAuthKey := randBytes(32)
 	resp, body := postJSON(t, ts.url+"/auth/recover/finish", map[string]any{
-		"email":        email,
-		"new_auth_key": b64(newAuthKey),
+		"email":          email,
+		"new_auth_key":   b64(newAuthKey),
+		"new_auth_salt":  b64(randBytes(16)),
+		"new_enc_salt":   b64(randBytes(16)),
+		"new_kdf_params": b64([]byte(`{"algo":"argon2id"}`)),
 		"new_wrapped_keys": []map[string]any{
 			{"kind": "master", "wrapped_blob": b64(bytes.Repeat([]byte{0x11}, 80))},
 		},
@@ -146,7 +163,7 @@ func TestRecoverFinish_RevokesAllSessions(t *testing.T) {
 		t.Fatalf("recover: %d %s", resp.StatusCode, body)
 	}
 
-	for i, r := range []string{refresh1, refresh2} {
+	for i, r := range refreshTokens {
 		resp, _ := postJSON(t, ts.url+"/auth/refresh", map[string]any{"refresh_token": r})
 		if resp.StatusCode != 401 {
 			t.Errorf("refresh token #%d survived recovery: got %d, want 401", i+1, resp.StatusCode)
