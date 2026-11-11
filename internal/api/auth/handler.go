@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/MattKenyei/password-manager-backend/internal/api/httputil"
 	"github.com/MattKenyei/password-manager-backend/internal/audit"
 	"github.com/MattKenyei/password-manager-backend/internal/config"
@@ -18,28 +20,38 @@ import (
 	"github.com/MattKenyei/password-manager-backend/internal/domain"
 	"github.com/MattKenyei/password-manager-backend/internal/storage"
 	"github.com/MattKenyei/password-manager-backend/internal/token"
-	"github.com/google/uuid"
 )
 
 type Handler struct {
-	users   *storage.UserRepository
-	devices *storage.DeviceRepository
-	refresh *storage.RefreshTokenRepository
-	issuer  *token.Issuer
-	cfg     *config.Config
-	audit   *audit.Logger
-	logger  *slog.Logger
+	users       *storage.UserRepository
+	devices     *storage.DeviceRepository
+	refresh     *storage.RefreshTokenRepository
+	wrappedKeys *storage.WrappedKeyRepository
+	issuer      *token.Issuer
+	cfg         *config.Config
+	audit       *audit.Logger
+	logger      *slog.Logger
 }
 
-func NewHandler(users *storage.UserRepository, devices *storage.DeviceRepository, refresh *storage.RefreshTokenRepository, issuer *token.Issuer, cfg *config.Config, auditLogger *audit.Logger, logger *slog.Logger) *Handler {
+func NewHandler(
+	users *storage.UserRepository,
+	devices *storage.DeviceRepository,
+	refresh *storage.RefreshTokenRepository,
+	wrappedKeys *storage.WrappedKeyRepository,
+	issuer *token.Issuer,
+	cfg *config.Config,
+	auditLogger *audit.Logger,
+	logger *slog.Logger,
+) *Handler {
 	return &Handler{
-		users:   users,
-		devices: devices,
-		refresh: refresh,
-		issuer:  issuer,
-		cfg:     cfg,
-		audit:   auditLogger,
-		logger:  logger,
+		users:       users,
+		devices:     devices,
+		refresh:     refresh,
+		wrappedKeys: wrappedKeys,
+		issuer:      issuer,
+		cfg:         cfg,
+		audit:       auditLogger,
+		logger:      logger,
 	}
 }
 
@@ -52,7 +64,6 @@ func clientIP(r *http.Request) string {
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	h.logger.Info("Register handler called", "email_len", len(r.Header.Get("Content-Type")))
 	var req RegisterRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -69,21 +80,53 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 
 	user := &domain.User{
-		Email:             email,
-		AuthVerifier:      crypto.HashAuthKey(req.AuthKey),
-		AuthSalt:          req.AuthSalt,
-		EncSalt:           req.EncSalt,
-		KDFParams:         req.KDFParams,
-		WrappedAccountKey: req.WrappedAccountKey,
+		Email:        email,
+		AuthVerifier: crypto.HashAuthKey(req.AuthKey),
+		AuthSalt:     req.AuthSalt,
+		EncSalt:      req.EncSalt,
+		KDFParams:    req.KDFParams,
 	}
 
 	if err := h.users.Create(r.Context(), user); err != nil {
 		if errors.Is(err, storage.ErrEmailExists) {
+			h.audit.Log(r.Context(), audit.Event{
+				EventType: "register_failure",
+				Result:    "failure",
+				IP:        clientIP(r),
+				UserAgent: r.UserAgent(),
+				Metadata:  map[string]any{"email": email, "reason": "email_exists"},
+			})
 			httputil.WriteError(w, http.StatusConflict, "email_exists", "email is already registered")
 			return
 		}
 		h.logger.Error("failed to create user", "error", err, "email", email)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to create user")
+		return
+	}
+
+	var keysToSave []storage.WrappedKey
+	if len(req.WrappedKeys) > 0 {
+		for _, wk := range req.WrappedKeys {
+			keysToSave = append(keysToSave, storage.WrappedKey{
+				UserID:      user.ID,
+				Kind:        wk.Kind,
+				WrappedBlob: wk.WrappedBlob,
+			})
+		}
+	} else if len(req.WrappedAccountKey) > 0 {
+		keysToSave = append(keysToSave, storage.WrappedKey{
+			UserID:      user.ID,
+			Kind:        "master",
+			WrappedBlob: req.WrappedAccountKey,
+		})
+	} else {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "wrapped keys required")
+		return
+	}
+
+	if err := h.wrappedKeys.CreateMany(r.Context(), keysToSave); err != nil {
+		h.logger.Error("failed to save wrapped keys", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to save keys")
 		return
 	}
 
@@ -99,7 +142,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, http.StatusCreated, RegisterResponse{
 		ID:        user.ID.String(),
 		Email:     user.Email,
-		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		CreatedAt: user.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
 
@@ -124,8 +167,20 @@ func validateRegisterRequest(req *RegisterRequest) map[string]string {
 	if len(req.KDFParams) == 0 {
 		errs["kdf_params"] = "required"
 	}
-	if len(req.WrappedAccountKey) < 61 {
+
+	if len(req.WrappedKeys) == 0 && len(req.WrappedAccountKey) == 0 {
+		errs["wrapped_account_key"] = "required"
+	}
+	if len(req.WrappedAccountKey) > 0 && len(req.WrappedAccountKey) < 61 {
 		errs["wrapped_account_key"] = "too short"
+	}
+	for _, wk := range req.WrappedKeys {
+		if wk.Kind == "" {
+			errs["wrapped_keys"] = "kind required"
+		}
+		if len(wk.WrappedBlob) < 61 {
+			errs["wrapped_keys"] = "wrapped_blob too short"
+		}
 	}
 
 	return errs
@@ -193,11 +248,9 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, storage.ErrUserNotFound) {
 			h.audit.Log(r.Context(), audit.Event{
-				EventType: "login_failure",
-				Result:    "failure",
-				IP:        clientIP(r),
-				UserAgent: r.UserAgent(),
-				Metadata:  map[string]any{"email": email, "reason": "user_not_found"},
+				EventType: "login_failure", Result: "failure",
+				IP: clientIP(r), UserAgent: r.UserAgent(),
+				Metadata: map[string]any{"email": email, "reason": "user_not_found"},
 			})
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 			return
@@ -210,12 +263,9 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 	providedVerifier := crypto.HashAuthKey(req.AuthKey)
 	if subtle.ConstantTimeCompare(providedVerifier, user.AuthVerifier) != 1 {
 		h.audit.Log(r.Context(), audit.Event{
-			UserID:    &user.ID,
-			EventType: "login_failure",
-			Result:    "failure",
-			IP:        clientIP(r),
-			UserAgent: r.UserAgent(),
-			Metadata:  map[string]any{"reason": "bad_password"},
+			UserID: &user.ID, EventType: "login_failure", Result: "failure",
+			IP: clientIP(r), UserAgent: r.UserAgent(),
+			Metadata: map[string]any{"reason": "bad_password"},
 		})
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
@@ -247,27 +297,40 @@ func (h *Handler) LoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	keys, err := h.wrappedKeys.ListByUser(r.Context(), user.ID)
+	if err != nil {
+		h.logger.Error("failed to list wrapped keys", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to load keys")
+		return
+	}
+
+	resp := LoginFinishResponse{
+		AccessToken:  accessToken,
+		RefreshToken: base64.StdEncoding.EncodeToString(rawRefresh),
+		ExpiresIn:    int(h.cfg.JWT.AccessTTL.Seconds()),
+	}
+	resp.WrappedKeys = make([]WrappedKeyDTO, 0, len(keys))
+	for _, k := range keys {
+		resp.WrappedKeys = append(resp.WrappedKeys, WrappedKeyDTO{
+			Kind:        k.Kind,
+			WrappedBlob: k.WrappedBlob,
+		})
+		if k.Kind == "master" {
+			resp.WrappedAccountKey = k.WrappedBlob
+		}
+	}
+
 	h.audit.Log(r.Context(), audit.Event{
-		UserID:    &user.ID,
-		DeviceID:  &deviceID,
-		EventType: "login_success",
-		Result:    "success",
-		IP:        clientIP(r),
-		UserAgent: r.UserAgent(),
+		UserID: &user.ID, DeviceID: &deviceID,
+		EventType: "login_success", Result: "success",
+		IP: clientIP(r), UserAgent: r.UserAgent(),
 		Metadata: map[string]any{
 			"device_platform": req.DevicePlatform,
 			"device_name":     req.DeviceName,
 		},
 	})
 
-	h.logger.Info("user logged in", "user_id", user.ID, "device_id", deviceID)
-
-	httputil.WriteJSON(w, http.StatusOK, LoginFinishResponse{
-		AccessToken:       accessToken,
-		RefreshToken:      base64.StdEncoding.EncodeToString(rawRefresh),
-		ExpiresIn:         int(h.cfg.JWT.AccessTTL.Seconds()),
-		WrappedAccountKey: user.WrappedAccountKey,
-	})
+	httputil.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
@@ -278,11 +341,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawToken, err := base64.StdEncoding.DecodeString(req.RefreshToken)
-	if err != nil {
-		httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
-		return
-	}
-	if len(rawToken) != 32 {
+	if err != nil || len(rawToken) != 32 {
 		httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
 		return
 	}
@@ -295,20 +354,13 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			if used, err2 := h.refresh.FindByHashUnsafely(r.Context(), hash); err2 == nil && used.UsedAt != nil {
 				h.logger.Warn("refresh token reuse detected, revoking device",
 					"device_id", used.DeviceID, "user_id", used.UserID)
-
 				h.audit.Log(r.Context(), audit.Event{
-					UserID:    &used.UserID,
-					DeviceID:  &used.DeviceID,
-					EventType: "refresh_token_reuse",
-					Result:    "security_alert",
-					IP:        clientIP(r),
-					UserAgent: r.UserAgent(),
-					Metadata:  map[string]any{"action": "device_tokens_revoked"},
+					UserID: &used.UserID, DeviceID: &used.DeviceID,
+					EventType: "refresh_token_reuse", Result: "security_alert",
+					IP: clientIP(r), UserAgent: r.UserAgent(),
+					Metadata: map[string]any{"action": "device_tokens_revoked"},
 				})
-
-				if err := h.refresh.RevokeDeviceTokens(r.Context(), used.DeviceID); err != nil {
-					h.logger.Error("failed to revoke device tokens", "error", err)
-				}
+				_ = h.refresh.RevokeDeviceTokens(r.Context(), used.DeviceID)
 			}
 			httputil.WriteError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
 			return
@@ -370,10 +422,121 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	if err == nil && t.RevokedAt == nil {
 		if err := h.refresh.RevokeDeviceTokens(r.Context(), t.DeviceID); err != nil {
 			h.logger.Error("failed to revoke tokens on logout", "error", err)
-			httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to logout")
-			return
 		}
 	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) RecoverStart(w http.ResponseWriter, r *http.Request) {
+	var req RecoverStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || !strings.Contains(email, "@") {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_email", "email is required")
+		return
+	}
+
+	user, err := h.users.FindByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			httputil.WriteJSON(w, http.StatusOK, RecoverStartResponse{
+				WrappedRecoveryBlob: make([]byte, 61),
+			})
+			return
+		}
+		h.logger.Error("recover: failed to find user", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to process request")
+		return
+	}
+
+	keys, err := h.wrappedKeys.ListByUser(r.Context(), user.ID)
+	if err != nil {
+		h.logger.Error("recover: failed to list keys", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to process request")
+		return
+	}
+
+	var recoveryBlob []byte
+	for _, k := range keys {
+		if k.Kind == "recovery" {
+			recoveryBlob = k.WrappedBlob
+			break
+		}
+	}
+	if recoveryBlob == nil {
+		recoveryBlob = make([]byte, 61)
+	}
+
+	httputil.WriteJSON(w, http.StatusOK, RecoverStartResponse{
+		WrappedRecoveryBlob: recoveryBlob,
+	})
+}
+
+func (h *Handler) RecoverFinish(w http.ResponseWriter, r *http.Request) {
+	var req RecoverFinishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" || len(req.NewAuthKey) != 32 || len(req.NewWrappedKeys) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "email, new_auth_key and new_wrapped_keys are required")
+		return
+	}
+
+	user, err := h.users.FindByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, storage.ErrUserNotFound) {
+			httputil.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or recovery code")
+			return
+		}
+		h.logger.Error("recover: failed to find user", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to process request")
+		return
+	}
+
+	newVerifier := crypto.HashAuthKey(req.NewAuthKey)
+	if err := h.users.UpdateAuthVerifier(r.Context(), user.ID, newVerifier); err != nil {
+		h.logger.Error("recover: failed to update verifier", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to update password")
+		return
+	}
+
+	_ = h.wrappedKeys.DeleteByKind(r.Context(), user.ID, "master")
+	_ = h.wrappedKeys.DeleteByKind(r.Context(), user.ID, "recovery")
+
+	var keysToSave []storage.WrappedKey
+	for _, wk := range req.NewWrappedKeys {
+		keysToSave = append(keysToSave, storage.WrappedKey{
+			UserID:      user.ID,
+			Kind:        wk.Kind,
+			WrappedBlob: wk.WrappedBlob,
+		})
+	}
+	if err := h.wrappedKeys.CreateMany(r.Context(), keysToSave); err != nil {
+		h.logger.Error("recover: failed to save new keys", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to save keys")
+		return
+	}
+
+	if err := h.users.RevokeAllRefreshTokens(r.Context(), user.ID); err != nil {
+		h.logger.Error("recover: failed to revoke sessions", "error", err)
+	}
+
+	h.audit.Log(r.Context(), audit.Event{
+		UserID:    &user.ID,
+		EventType: "recovery_success",
+		Result:    "success",
+		IP:        clientIP(r),
+		UserAgent: r.UserAgent(),
+		Metadata:  map[string]any{"email": email},
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 }

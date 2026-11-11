@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -72,4 +73,22 @@ func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*domain
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+func (r *UserRepository) UpdateAuthVerifier(ctx context.Context, userID uuid.UUID, verifier []byte) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE users SET auth_verifier = $1, updated_at = NOW() WHERE id = $2`, verifier, userID)
+	if err != nil {
+		return fmt.Errorf("update auth verifier: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func (r *UserRepository) RevokeAllRefreshTokens(ctx context.Context, userID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, userID)
+	return err
 }

@@ -50,8 +50,9 @@ func main() {
 	itemRepo := storage.NewItemRepository(pool)
 	issuer := token.NewIssuer(cfg.JWT.Secret, cfg.JWT.AccessTTL)
 	hub := ws.NewHub(logger)
+	wrappedKeyRepo := storage.NewWrappedKeyRepository(pool)
 
-	authHandler := auth.NewHandler(userRepo, deviceRepo, refreshRepo, issuer, cfg, auditLogger, logger)
+	authHandler := auth.NewHandler(userRepo, deviceRepo, refreshRepo, wrappedKeyRepo, issuer, cfg, auditLogger, logger)
 	auditHandler := auditapi.NewHandler(pool, logger)
 	devicesHandler := devices.NewHandler(deviceRepo, refreshRepo, logger)
 	syncHandler := synchandler.NewHandler(itemRepo, hub, logger)
@@ -82,6 +83,8 @@ func main() {
 	mux.HandleFunc("POST /auth/login/finish", middleware.RateLimit(loginLimiter, logger, authHandler.LoginFinish))
 	mux.HandleFunc("POST /auth/refresh", authHandler.Refresh)
 	mux.HandleFunc("POST /auth/logout", authHandler.Logout)
+	mux.HandleFunc("POST /auth/recover/start", middleware.RateLimit(loginLimiter, logger, authHandler.RecoverStart))
+	mux.HandleFunc("POST /auth/recover/finish", middleware.RateLimit(loginLimiter, logger, authHandler.RecoverFinish))
 
 	mux.HandleFunc("GET /ws", wsHandler.ServeWS)
 	mux.HandleFunc("GET /devices", middleware.RequireAuth(issuer, devicesHandler.List))
