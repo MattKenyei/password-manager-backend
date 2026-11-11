@@ -7,14 +7,13 @@ import (
 )
 
 type User struct {
-	ID                 uuid.UUID
-	Email              string
-	AuthVerifier       []byte
-	AuthSalt           []byte
-	EncSalt            []byte
-	KDFParams          []byte
-	WrappedAccountKey  []byte
-	KeyGeneration      int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID            uuid.UUID
+	Email         string
+	AuthVerifier  []byte
+	AuthSalt      []byte
+	EncSalt       []byte
+	KDFParams     []byte
+	KeyGeneration int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }

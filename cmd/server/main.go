@@ -65,8 +65,16 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	loginLimiter := ratelimit.New(redisClient, "auth-login", 10, time.Minute)
-	registerLimiter := ratelimit.New(redisClient, "auth-register", 30, time.Minute)
+	loginLimit := int64(30)
+	registerLimit := int64(100)
+
+	if os.Getenv("E2E_MODE") == "1" {
+		loginLimit = 10_000
+		registerLimit = 10_000
+	}
+
+	loginLimiter := ratelimit.New(redisClient, "auth-login", loginLimit, time.Minute)
+	registerLimiter := ratelimit.New(redisClient, "auth-register", registerLimit, time.Minute)
 
 	mux := http.NewServeMux()
 
