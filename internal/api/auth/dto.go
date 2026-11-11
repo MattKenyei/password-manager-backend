@@ -76,5 +76,8 @@ type RecoverStartResponse struct {
 type RecoverFinishRequest struct {
 	Email          string          `json:"email"`
 	NewAuthKey     []byte          `json:"new_auth_key"`
+	NewAuthSalt    []byte          `json:"new_auth_salt"`
+	NewEncSalt     []byte          `json:"new_enc_salt"`
+	NewKDFParams   []byte          `json:"new_kdf_params"`
 	NewWrappedKeys []WrappedKeyDTO `json:"new_wrapped_keys"`
 }

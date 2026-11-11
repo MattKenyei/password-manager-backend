@@ -42,7 +42,8 @@ func (r *WrappedKeyRepository) CreateMany(ctx context.Context, keys []WrappedKey
 
 func (r *WrappedKeyRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]WrappedKey, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, kind, credential_id, wrapped_blob FROM wrapped_keys WHERE user_id = $1 ORDER BY created_at`, userID)
+		`SELECT id, user_id, kind, credential_id, wrapped_blob
+		 FROM wrapped_keys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list wrapped keys: %w", err)
 	}
@@ -62,4 +63,29 @@ func (r *WrappedKeyRepository) ListByUser(ctx context.Context, userID uuid.UUID)
 func (r *WrappedKeyRepository) DeleteByKind(ctx context.Context, userID uuid.UUID, kind string) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM wrapped_keys WHERE user_id = $1 AND kind = $2`, userID, kind)
 	return err
+}
+
+func (r *WrappedKeyRepository) ReplaceAll(ctx context.Context, userID uuid.UUID, keys []WrappedKey) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `DELETE FROM wrapped_keys WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete old keys: %w", err)
+	}
+
+	for _, k := range keys {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO wrapped_keys (user_id, kind, credential_id, wrapped_blob)
+			VALUES ($1, $2, $3, $4)`,
+			userID, k.Kind, k.CredentialID, k.WrappedBlob,
+		)
+		if err != nil {
+			return fmt.Errorf("insert wrapped key: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
 }
