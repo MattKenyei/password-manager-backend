@@ -501,15 +501,20 @@ func (h *Handler) RecoverFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newVerifier := crypto.HashAuthKey(req.NewAuthKey)
-	if err := h.users.UpdateAuthVerifier(r.Context(), user.ID, newVerifier); err != nil {
-		h.logger.Error("recover: failed to update verifier", "error", err)
-		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to update password")
+	if len(req.NewAuthSalt) < 16 || len(req.NewEncSalt) < 16 || len(req.NewKDFParams) == 0 {
+		httputil.WriteError(w, http.StatusBadRequest, "invalid_request", "new salts and kdf_params are required")
 		return
 	}
 
-	_ = h.wrappedKeys.DeleteByKind(r.Context(), user.ID, "master")
-	_ = h.wrappedKeys.DeleteByKind(r.Context(), user.ID, "recovery")
+	newVerifier := crypto.HashAuthKey(req.NewAuthKey)
+	if err := h.users.UpdateCredentials(
+		r.Context(), user.ID,
+		newVerifier, req.NewAuthSalt, req.NewEncSalt, req.NewKDFParams,
+	); err != nil {
+		h.logger.Error("recover: failed to update credentials", "error", err)
+		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to update password")
+		return
+	}
 
 	var keysToSave []storage.WrappedKey
 	for _, wk := range req.NewWrappedKeys {
@@ -519,8 +524,8 @@ func (h *Handler) RecoverFinish(w http.ResponseWriter, r *http.Request) {
 			WrappedBlob: wk.WrappedBlob,
 		})
 	}
-	if err := h.wrappedKeys.CreateMany(r.Context(), keysToSave); err != nil {
-		h.logger.Error("recover: failed to save new keys", "error", err)
+	if err := h.wrappedKeys.ReplaceAll(r.Context(), user.ID, keysToSave); err != nil {
+		h.logger.Error("recover: failed to replace wrapped keys", "error", err)
 		httputil.WriteError(w, http.StatusInternalServerError, "internal_error", "failed to save keys")
 		return
 	}
