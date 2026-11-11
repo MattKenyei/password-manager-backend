@@ -1,12 +1,20 @@
 package auth
 
 type RegisterRequest struct {
-	Email             string `json:"email"`
-	AuthKey           []byte `json:"auth_key"`
-	AuthSalt          []byte `json:"auth_salt"`
-	EncSalt           []byte `json:"enc_salt"`
-	KDFParams         []byte `json:"kdf_params"`
-	WrappedAccountKey []byte `json:"wrapped_account_key"`
+	Email     string `json:"email"`
+	AuthKey   []byte `json:"auth_key"`
+	AuthSalt  []byte `json:"auth_salt"`
+	EncSalt   []byte `json:"enc_salt"`
+	KDFParams []byte `json:"kdf_params"`
+
+	WrappedAccountKey []byte `json:"wrapped_account_key,omitempty"`
+
+	WrappedKeys []WrappedKeyDTO `json:"wrapped_keys"`
+}
+
+type WrappedKeyDTO struct {
+	Kind        string `json:"kind"`
+	WrappedBlob []byte `json:"wrapped_blob"`
 }
 
 type RegisterResponse struct {
@@ -34,10 +42,13 @@ type LoginFinishRequest struct {
 }
 
 type LoginFinishResponse struct {
-	AccessToken       string `json:"access_token"`
-	RefreshToken      string `json:"refresh_token"`
-	ExpiresIn         int    `json:"expires_in"`
-	WrappedAccountKey []byte `json:"wrapped_account_key"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+
+	WrappedAccountKey []byte `json:"wrapped_account_key,omitempty"`
+
+	WrappedKeys []WrappedKeyDTO `json:"wrapped_keys"`
 }
 
 type RefreshRequest struct {
@@ -52,4 +63,18 @@ type RefreshResponse struct {
 
 type LogoutRequest struct {
 	RefreshToken string `json:"refresh_token"`
+}
+
+type RecoverStartRequest struct {
+	Email string `json:"email"`
+}
+
+type RecoverStartResponse struct {
+	WrappedRecoveryBlob []byte `json:"wrapped_recovery_blob"`
+}
+
+type RecoverFinishRequest struct {
+	Email          string          `json:"email"`
+	NewAuthKey     []byte          `json:"new_auth_key"`
+	NewWrappedKeys []WrappedKeyDTO `json:"new_wrapped_keys"`
 }

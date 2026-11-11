@@ -106,18 +106,50 @@ func SeedUserWithPassword(t *testing.T, pool *pgxpool.Pool, email string, authKe
 	sum := sha256.Sum256(authKey)
 	id := uuid.New()
 
-	_, err := pool.Exec(context.Background(), `
-		INSERT INTO users (id, email, auth_verifier, auth_salt, enc_salt, kdf_params, wrapped_account_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	_, err = tx.Exec(context.Background(), `
+		INSERT INTO users (id, email, auth_verifier, auth_salt, enc_salt, kdf_params)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	`, id, email,
 		sum[:],
 		[]byte{0x02, 0x03, 0x04, 0x05},
 		[]byte{0x06, 0x07, 0x08, 0x09},
 		[]byte(`{"algo":"argon2id"}`),
-		bytes.Repeat([]byte{0xFF}, 80),
 	)
 	if err != nil {
-		t.Fatalf("seed user with password: %v", err)
+		t.Fatalf("seed user: %v", err)
+	}
+
+	_, err = tx.Exec(context.Background(), `
+		INSERT INTO wrapped_keys (user_id, kind, wrapped_blob)
+		VALUES ($1, 'master', $2)
+	`, id, bytes.Repeat([]byte{0xFF}, 80))
+	if err != nil {
+		t.Fatalf("seed wrapped key: %v", err)
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	return id
+}
+
+func SeedUserWithRecovery(t *testing.T, pool *pgxpool.Pool, email string, authKey []byte) uuid.UUID {
+	t.Helper()
+	id := SeedUserWithPassword(t, pool, email, authKey)
+
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO wrapped_keys (user_id, kind, wrapped_blob)
+		VALUES ($1, 'recovery', $2)
+	`, id, bytes.Repeat([]byte{0xAA}, 80))
+	if err != nil {
+		t.Fatalf("seed recovery key: %v", err)
 	}
 
 	return id
